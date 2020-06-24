@@ -1,0 +1,1149 @@
+\documentclass{beamer}
+\usetheme{metropolis}
+%\setsansfont[BoldFont={Fira Sans SemiBold}]{Fira Sans Book}
+%\setsansfont{Fontin}
+%\setsansfont{Gillius ADF No2}
+%\setsansfont{Phetsarath OT}
+\setsansfont{Source Sans Pro}
+\setmonofont{Source Code Pro}
+
+\hypersetup{colorlinks=true,
+            linkcolor=mRustLightOrange,
+            menucolor=mRustLightOrange,
+            pagecolor=mRustLightOrange,
+            urlcolor=mRustLightOrange}
+\usepackage{csquotes}
+\usepackage{comment}
+\usepackage{xcolor}
+\usepackage{minted}
+
+\newfontfamily\codefont{Source Code Pro}
+\newcommand\code[1]{\,{\color[HTML]{884400}#1}\,}
+\newcommand\source[1]{$\rightarrow$ via #1}
+
+\title{Rust's advanced type system}
+\date{\today}
+\author{Lukas Prokop}
+\institute{RustGraz community\vfill\hfill\includegraphics[height=2cm]{images/rustacean-orig-noshadow.png}}
+\begin{document}
+\maketitle
+
+\section{Prologue}
+
+\begin{frame}[standout]
+  How is \mintinline{rust}{assert_eq!} implemented? Does it typecheck at compile-time?
+\end{frame}
+
+\begin{frame}[fragile]{macros}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+macro_rules! assert_eq {
+  ($left:expr, $right:expr) => ({
+    match (&$left, &$right) {
+      (left_val, right_val) => {
+        if !(*left_val == *right_val) {
+          // The reborrows below are intentional.
+          // Without them, the stack slot for the
+          // borrow is initialized even before the
+          // values are compared, leading to a
+          // noticeable slow down.
+          panic!(r#"assertion failed: `(left == right)`
+left: `{:?}`,
+right: `{:?}`"#, &*left_val, &*right_val)
+        }
+      }
+    }
+  });
+  \end{minted}
+\end{frame}
+
+
+\begin{frame}[fragile]{macros}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+  ($left:expr, $right:expr,) => ({
+    $crate::assert_eq!($left, $right)
+  });
+  ($left:expr, $right:expr, $($arg:tt)+) => ({
+    match (&($left), &($right)) {
+      (left_val, right_val) => {
+        if !(*left_val == *right_val) {
+          // The reborrows below are intentional.
+          // Without them, the stack slot for the
+          // borrow is initialized even before the
+          // values are compared, leading to a
+          // noticeable slow down.
+          panic!(r#"assertion failed: `(left == right)`
+left: `{:?}`,
+right: `{:?}`: {}"#, &*left_val, &*right_val,
+                 $crate::format_args!($($arg)+))
+        }
+      }
+    }
+  });
+}
+  \end{minted}
+\end{frame}
+
+\section{Dialogue}
+
+\begin{frame}[fragile]{Recap: traits}
+  \begin{itemize}
+    \item Semantically like a contract. Methods and constants.
+    \item No subtyping, no inheritance, inspired by Haskell typeclasses.
+    \item Trait can be implemented iff trait or type is local (trait coherence)
+    \item implementation in \mintinline{rust}{impl Trait for Type} block
+  \end{itemize}
+  \begin{minted}{rust}
+use std::os::unix::net;
+use std::fs;
+
+trait Sendable {
+    fn to_socket(&self, s: net::UnixStream);
+    fn to_file(&self, l: fs::File);
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Recap: generics}
+  \begin{itemize}
+    \item Replace a type by a \emph{type argument}
+    \item Actual type will be inserted upon instantiation
+    \item Implemented with monomorphisation
+    \item Trait bounds to require implementation of a trait
+  \end{itemize}
+  \begin{minted}{rust}
+fn send<T: Sendable>(sender: T, req: Request) {
+    if req.header.dest() == Resources::FILE {
+      sender.to_file(req.log_file);
+    } else {
+      sender.to_socket(req.socket);
+    }
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[standout]
+  \mintinline{rust}{Trait1} requires implementation of \mintinline{rust}{Trait2}
+\end{frame}
+
+\begin{frame}[fragile]{Require implementation of another trait}
+  \begin{itemize}
+    \item If \mintinline{rust}{Trait1} is implemented, then \mintinline{rust}{Trait2} must be implemented
+    \item \mintinline{rust}{trait Trait1: Trait2}
+    \item Concept that comes closest to OOP subtyping, but no inheritance
+  \end{itemize}
+  \begin{minted}{rust}
+trait JSONToFile: JSONSerializable {
+  fn json_to_file(&self, s: fs::File)
+    -> io::Result<()>;
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Require trait implementation (example)}
+  \begin{minted}{rust}
+use std::{io,fs};
+use std::io::{BufWriter,Write};
+use std::fs::File;
+
+trait JSONSerializable {
+  fn to_json(&self) -> Vec<u8>;
+}
+
+trait JSONToFile: JSONSerializable {
+  fn json_to_file(&self, s: fs::File)
+    -> io::Result<()>;
+}    
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Require trait implementation (example)}
+  \begin{minted}[fontsize=\small]{rust}
+struct MyType { val: u32 }
+
+impl JSONSerializable for MyType {
+  fn to_json(&self) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for v in br#"{"type":"int", "value":"#.iter() {
+      bytes.push(*v);
+    }
+    for v in format!("{}", self.val).bytes() {
+      bytes.push(v);
+    }
+    bytes.push(b'}');
+    bytes
+  }
+}
+
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Require trait implementation (example)}
+  \begin{minted}{rust}
+impl JSONToFile for MyType {
+  fn json_to_file(&self, fd: fs::File)
+    -> io::Result<()>
+  {
+    let mut writer = BufWriter::new(fd);
+    writer.write(self.to_json().as_slice())?;
+    Ok(())
+  }
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Require trait implementation (example)}
+  \begin{minted}{rust}
+fn write_json<T: JSONToFile>
+  (w: T, filepath: &str) -> io::Result<()>
+{
+  let fd = File::create(filepath)?;
+  w.json_to_file(fd)
+}
+
+fn main() -> io::Result<()> {
+  write_json(
+    MyType { val: 42u32 },
+    "example.json"
+  )
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[standout]
+  Which operators are overwritable?
+\end{frame}
+
+\begin{frame}[fragile]{Non-overloadable operators}
+  There is a defined set of operator traits.
+  The following operators cannot be overwritten:
+  \begin{itemize}
+    \item \mintinline{rust}{?} for error handling
+    \item \mintinline{rust}{||} as \emph{lazy boolean or}
+    \item \mintinline{rust}{&&} as \emph{lazy boolean and}
+    \item \mintinline{rust}{=} as \emph{assignment operator}
+    \item \mintinline{rust}{&v &&v &&&v} \dots\ to get a reference
+    \item \mintinline{rust}{&mut v  &&mut v} \dots\ to get a mutable reference
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references}
+  \begin{minted}{rust}
+fn print_number(s: &&u32) {
+  println!("{}", **s);  // prints “42”
+}
+
+fn main() {
+  print_number(&&42);
+}
+\end{minted}
+  \phantom{Does it compile? Yes, \href{https://stackoverflow.com/q/28519997}{auto-dereferencing}.}
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references}
+  \begin{minted}{rust}
+fn print_number(s: &&u32) {
+  println!("{}", s);  // w/o “**”
+}
+
+fn main() {
+  print_number(&&42);
+}
+\end{minted}
+  Does it compile? \pause{Yes, \href{https://stackoverflow.com/q/28519997}{auto-dereferencing}.}
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references in C}
+  \begin{minted}{C}
+#include <stdio.h>
+#include <stdint.h>
+
+void print_number(uint32_t **s) {
+  printf("%u", **s);
+}
+int main() {
+  print_number(&&42);
+  return 0;
+}
+\end{minted}
+  Does it compile? \pause{No.}
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references in C}
+  \begin{minted}{text}
+main.c:8:18: error: expected identifier
+  print_number(&&42);
+                 ^
+1 error generated.
+\end{minted}
+  Let's consider one level less. The error message becomes more explicit.
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references in C}
+  \begin{minted}{C}
+#include <stdio.h>
+#include <stdint.h>
+
+void print_number(uint32_t *s) {
+  printf("%u", *s);
+}
+int main() {
+  print_number(&42);
+  return 0;
+}
+\end{minted}
+Does it compile? No.
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references}
+  \begin{minted}{text}
+main.c:8:16: error: cannot take the address of
+                    an rvalue of type 'int'
+  print_number(&42);
+                ^~~
+1 error generated.
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references}
+  \begin{minted}{C}
+#include <stdio.h>
+#include <stdint.h>
+
+void print_number(uint32_t *s) {
+  printf("%u", *s);
+}
+int main() {
+  uint32_t val = 42;
+  print_number(&val);
+  return 0;
+}
+\end{minted}
+  Does it compile? \pause{Yes.}
+\end{frame}
+
+\begin{frame}[fragile]{n-ary references}
+  \textbf{Summary:}
+  \begin{itemize}
+    \item In rust, you can take references to constant values.
+    \item In C, you cannot (unless you assign them).
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Overloadable operators}
+  This the defined (and exhaustive) set of operator traits.
+  \begin{itemize}
+    \item implement \mintinline{rust}{std::ops::Neg} for \mintinline{rust}{-}
+    \item implement \mintinline{rust}{std::ops::Not} for \mintinline{rust}{!}
+    \item implement \mintinline{rust}{std::ops::Add} for \mintinline{rust}{+}
+    \item implement \mintinline{rust}{std::ops::Sub} for \mintinline{rust}{-}
+    \item implement \mintinline{rust}{std::ops::Mul} for \mintinline{rust}{*}
+    \item implement \mintinline{rust}{std::ops::Div} for \mintinline{rust}{/}
+    \item implement \mintinline{rust}{std::ops::Rem} for \mintinline{rust}{%}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Overloadable operators}
+  \begin{itemize}
+    \item implement \mintinline{rust}{std::ops::BitAnd} for \mintinline{rust}{&}
+    \item implement \mintinline{rust}{std::ops::BitOr} for \mintinline{rust}{|}
+    \item implement \mintinline{rust}{std::ops::BitXor} for \mintinline{rust}{^}
+    \item implement \mintinline{rust}{std::ops::Shl} for \mintinline{rust}{<<}
+    \item implement \mintinline{rust}{std::ops::Shr} for \mintinline{rust}{>>}
+    \item implement \mintinline{rust}{std::cmp::PartialEq::eq} for \mintinline{rust}{==}
+    \item implement \mintinline{rust}{std::cmp::PartialEq::ne} for \mintinline{rust}{!=}
+    \item implement \mintinline{rust}{std::cmp::PartialOrd::gt} for \mintinline{rust}{>}
+    \item implement \mintinline{rust}{std::cmp::PartialOrd::lt} for \mintinline{rust}{<}
+    \item implement \mintinline{rust}{std::cmp::PartialOrd::ge} for \mintinline{rust}{>=}
+    \item implement \mintinline{rust}{std::cmp::PartialOrd::le} for \mintinline{rust}{<=}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Overloadable operators}
+  \begin{itemize}
+    \item implement \mintinline{rust}{std::ops::AddAssign} for \mintinline{rust}{+=}
+    \item implement \mintinline{rust}{std::ops::SubAssign} for \mintinline{rust}{-=}
+    \item implement \mintinline{rust}{std::ops::MulAssign} for \mintinline{rust}{*=}
+    \item implement \mintinline{rust}{std::ops::DivAssign} for \mintinline{rust}{/=}
+    \item implement \mintinline{rust}{std::ops::RemAssign} for \mintinline{rust}{%=}
+    \item implement \mintinline{rust}{std::ops::BitAndAssign} for \mintinline{rust}{&=}
+    \item implement \mintinline{rust}{std::ops::BitOrAssign} for \mintinline{rust}{|=}
+    \item implement \mintinline{rust}{std::ops::BitXorAssign} for \mintinline{rust}{^=}
+    \item implement \mintinline{rust}{std::ops::ShlAssign} for \mintinline{rust}{<<=}
+    \item implement \mintinline{rust}{std::ops::ShrAssign} for \mintinline{rust}{>>=}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Overloadable operators}
+  \begin{itemize}
+    \item implement \mintinline{rust}{std::ops::Index} for indexing \mintinline{rust}{v[i]}
+    \item implement \mintinline{rust}{std::ops::IndexMut} for mutable indexing
+    \item implement \mintinline{rust}{std::ops::Deref} for \mintinline{rust}{* ** ***} \dots
+    \item implement \mintinline{rust}{std::ops::DerefMut} for \mintinline{rust}{*mut **mut ***mut} \dots
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Deref example}
+  \textbf{Goal:}
+  \begin{itemize}
+    \item Let \texttt{v} be value 42 (wrapped by custom type).
+    \item \mintinline{rust}{v} is represented as \mintinline{text}{42}
+    \item \mintinline{rust}{&v} is represented as \mintinline{text}{(42)}
+    \item \mintinline{rust}{&&v} is represented as \mintinline{text}{((42))}
+    \item \mintinline{rust}{&&&v} is represented as \mintinline{text}{(((42)))} \dots
+  \end{itemize}
+  \pause
+  \textbf{Problem:}
+  \begin{itemize}
+    \item We cannot overload \mintinline{rust}{&v}, but \mintinline{rust}{*v}
+    \item Let \mintinline{rust}{v} be \mintinline{text}{((((((((42))))))))}
+    \item Let \mintinline{rust}{*v} be \mintinline{text}{((((((42))))))}
+    \item Let \mintinline{rust}{**v} be \mintinline{text}{(((((42)))))} \dots
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Deref example}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+use std::fmt;
+use std::ops::Deref;
+
+struct Wrapped<T: fmt::Display> {
+  value: T,
+  depth: usize,
+}
+
+impl<T: fmt::Display> fmt::Display for Wrapped<T> {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "{}{}{}", "(".repeat(self.depth),
+           self.value, ")".repeat(self.depth))
+  }
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Deref example}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+impl<T: fmt::Display> Deref for Wrapped<T> {
+  type Target = T;
+
+  fn deref(&self) -> &Self::Target {
+    &Wrapped { value: self.value, depth: self.depth - 1 }
+  }
+}
+
+fn main() {
+    let v = Wrapped{ value: 1, depth: 8 };
+    println!("{}", v);
+    println!("{}", ****v);
+    println!("{}", ********v);
+}
+\end{minted}
+  Does it compile? \pause No.
+\end{frame}
+
+\begin{frame}[fragile]{Deref example}
+  \begin{minted}[fontsize=\scriptsize]{text}
+error[E0614]: type `{integer}` cannot be dereferenced
+  --> src/main.rs:27:22
+   |
+27 |     println!("{}", ****v);
+   |                      ^^^
+
+error[E0614]: type `{integer}` cannot be dereferenced
+  --> src/main.rs:28:26
+   |
+28 |     println!("{}", ********v);
+   |                          ^^^
+\end{minted}
+  Why?
+\end{frame}
+
+\begin{frame}[fragile]{Deref example (hint for error)}
+  \begin{minted}{rust}
+struct Wrapped<T: fmt::Display> {
+  value: T,
+  depth: usize,
+}
+
+impl<T: fmt::Display> Deref for Wrapped<T> {
+  type Target = T;
+
+  fn deref(&self) -> &Self::Target {
+    &Wrapped { value: self.value,
+               depth: self.depth - 1 }
+  }
+}
+\end{minted}
+  \pause \texttt{T} is \mintinline{rust}{u32}, thus \mintinline{rust}{Self::Target} as well.
+\end{frame}
+
+
+\begin{frame}[fragile]{Deref example}
+  \textbf{My learning process:}
+  \begin{itemize}
+  	\item Where can we store the depth information?
+    \item \mintinline{rust}{fn deref(&self) -> &Self::Target} uses \mintinline{rust}{&self} (c.f. \mintinline{rust}{&mut self}). Does not permit mutation.
+    \item We also cannot create new object, because where do we store it? (switch to heap objects like Rc would be possible)
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Deref example (fixed)}
+  \begin{minted}{rust}
+fn main() {
+    let v1 = Wrapped{ value: 42, depth: 0 };
+    let v2 = Wrapped{ value: &v1, depth: 1 };
+    let v3 = Wrapped{ value: &v2, depth: 2 };
+    let v4 = Wrapped{ value: &v3, depth: 3 };
+    println!("{}", v1);  // "42"
+    println!("{}", v2);  // "(42)"
+    println!("{}", *v2); // "42"
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Deref example (fixed)}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+use std::fmt;
+use std::ops::Deref;
+
+struct Wrapped<T: fmt::Display> {
+  value: T,
+  depth: usize,
+}
+
+impl<T: fmt::Display> Deref for Wrapped<T> {
+  type Target = T;
+
+  fn deref(&self) -> &Self::Target {
+    &Wrapped { value: self.value,
+               depth: self.depth - 1 }
+  }
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Deref example (fixed)}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+impl<T: fmt::Display> fmt::Display for Wrapped<T> {
+    fn fmt(&self, f: &mut fmt::Formatter)
+       -> fmt::Result {
+        write!(f,
+               "{}{}{}",
+               "(".repeat(self.depth),
+               self.value,
+               ")".repeat(self.depth))
+    }
+}
+
+impl<T: fmt::Display> Deref for Wrapped<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[standout]
+  Trait objects
+\end{frame}
+
+\begin{frame}[fragile]{Method dispatch}
+  \textbf{Cliff hanger, last time}: Can we take references to traits?
+
+  Let T be a trait. We call \mintinline{rust}{T.method()}. \\
+  Where do we find the implementation of \texttt{method}?
+  \begin{itemize}
+    \item \textbf{static dispatch:} monomorphization, like C++ templates, preferred dispatch
+    \item \textbf{dynamic dispatch:} trait objects
+  \end{itemize}
+
+  One application example for dynamic dispatch: What about a vector of objects implementing a trait; \mintinline{rust}{Vec<Trait>}?
+  \begin{itemize}
+    \item \textbf{static dispatch:} wrap each possible type with \mintinline{rust}{enum}, unextensible to external types
+    \item \textbf{dynamic dispatch:} trait object
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Monomorphisation example}
+  \begin{minted}{rust}
+struct Wrapped { val: u32 }
+
+trait Numeric {
+  fn as_u32(&self) -> u32;
+}
+
+impl Numeric for Wrapped {
+  fn as_u32(&self) -> u32 {
+    self.val
+  }
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Monomorphisation example}
+  \begin{minted}{rust}
+fn print_int<T: Numeric>(obj: T) {
+    println!("{:x}", obj.as_u32());
+}
+
+fn main() {
+    let v = Wrapped { val: 42 };
+    print_int(v);  // "2a"
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  Can we provide \mintinline{rust}{&Wrapped} for \mintinline{rust}{Numeric}?
+  \begin{minted}[linenos]{rust}
+fn print_int<T: Numeric>(obj: T) {
+    println!("{:x}", obj.as_u32());
+}
+
+fn main() {
+    let v = Wrapped { val: 42 };
+    print_int(&v);
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  \begin{minted}[fontsize=\scriptsize]{text}
+error[E0277]: the trait bound `&Wrapped: Numeric` is not satisfied
+  --> src/main.rs:20:15
+   |
+14 | fn print_int<T: Numeric>(obj: T) {
+   |    ---------    ------- required by this bound in `print_int`
+...
+20 |     print_int(&v);
+   |               -^
+   |               |
+   | the trait `Numeric` is not implemented for `&Wrapped`
+   | help: consider removing the leading `&`-reference
+   |
+   = help: the following implementations were found:
+             <Wrapped as Numeric>
+\end{minted}
+  \pause Apparently, we can implement \mintinline{rust}{Numeric} for \mintinline{rust}{&Wrapped} as well.
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+struct Wrapped { val: u32 }
+trait Numeric {
+  fn as_u32(&self) -> u32;
+}
+
+impl Numeric for Wrapped {
+  fn as_u32(&self) -> u32 { self.val }
+}
+impl Numeric for &Wrapped {
+  fn as_u32(&self) -> u32 { (**self).val }
+}
+
+fn print_int<T: Numeric>(obj: T) {
+  println!("{:x}", obj.as_u32());
+}
+fn main() {
+  let v = Wrapped { val: 42 };
+  print_int(&v); // "2a"
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  What about \mintinline{rust}{&Wrapped} \emph{and} \mintinline{rust}{&Numeric}?
+  \begin{minted}[linenos]{rust}
+fn print_int<T: &Numeric>(obj: T) {
+    println!("{:x}", obj.as_u32());
+}
+
+fn main() {
+    let v = Wrapped { val: 42 };
+    print_int(&v);
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  \begin{minted}[fontsize=\scriptsize]{text}
+error: expected one of `!`, `(`, `,`, `=`,
+       `>`, `?`, `for`, lifetime, or path, found `&`
+  --> src/main.rs:14:17
+   |
+14 | fn print_int<T: &Numeric>(obj: T) {
+   |                 ^ expected one of 9 possible tokens
+
+error: aborting due to previous error
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  \textbf{Recap:} Let's switch syntax. Can we use \mintinline{rust}{Numeric} as type?
+  \begin{minted}[linenos]{rust}
+fn print_int(obj: Numeric) {
+    println!("{:x}", obj.as_u32());
+}
+
+fn main() {
+    let v = Wrapped { val: 42 };
+    print_int(v);
+}
+\end{minted}
+  \pause
+  No, we need to use the \mintinline{rust}{impl} keyword!
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  \textbf{Recap:} use \mintinline{rust}{impl}! This is the equivalent syntax to \mintinline{rust}{fn print_int<T: Numeric>(obj: T)}.
+  \begin{minted}[linenos]{rust}
+fn print_int(obj: impl Numeric) {
+    println!("{:x}", obj.as_u32());
+}
+
+fn main() {
+    let v = Wrapped { val: 42 };
+    print_int(v);
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  But it \textbf{does work} if we use \mintinline{rust}{&Numeric} as type!
+  \begin{minted}[linenos]{rust}
+fn print_int(obj: &Numeric) {
+    println!("{:x}", obj.as_u32());
+}
+
+fn main() {
+    let v = Wrapped { val: 42 };
+    print_int(&v);   // "2a"
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[standout]
+  \dots\ so, what is a trait object?
+\end{frame}
+
+\begin{frame}[fragile]{Trait objects}
+  \textbf{Idea:}
+  \begin{itemize}
+    \item We generate an separate object from an object maintaining pointers to the actual implementation of the methods specified in the trait (and \emph{only those})!
+    \item Exactly like Golang's function call with argument of interface type
+    \item Similar to C++'s vtable
+    \item Runtime overhead, no inlining of function calls
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Trait objects}
+  \textbf{Syntax and history:}
+  \begin{itemize}
+    \item \mintinline{rust}{dyn} keyword: \mintinline{rust}{dyn Trait} is a type referring to any trait object implementing \texttt{Trait}
+    \item Since \href{https://blog.rust-lang.org/2018/06/21/Rust-1.27.html}{Rust 1.27}. Is \texttt{Foo} a struct or a trait?
+  \end{itemize}
+  \begin{tabular}{lll}
+\mintinline{rust}{Box<Foo>} & became & \mintinline{rust}{Box<dyn Foo>} \\
+\mintinline{rust}{&Foo    } & became & \mintinline{rust}{&dyn Foo} \\
+\mintinline{rust}{&mut Foo} & became & \mintinline{rust}{&mut dyn Foo}
+\end{tabular}
+\end{frame}
+
+\begin{frame}[fragile]{Trait objects}
+  \textbf{Requirements} for traits to generate trait objects (\enquote{object safe}):
+  \begin{itemize}
+    \item All return types must not be Self.
+    \item No generic type parameters.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Trial and error}
+  Standard library's \mintinline{rust}{Clone} trait is \textbf{not} object-safe:
+  \begin{minted}{rust}
+pub trait Clone {
+    fn clone(&self) -> Self;
+}
+\end{minted}
+  \pause Thus, \mintinline{rust}{dyn Clone} is not permitted.
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}{rust}
+trait Named {
+    fn name(&self) -> String;
+}
+
+struct Student { name: String }
+struct Teacher { name: String }
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}{rust}
+impl Named for Student {
+    fn name(&self) -> String {
+        let mut s = String::from("student ");
+        s.push_str(&self.name);
+        s
+    }
+}
+
+impl Named for Teacher {
+    fn name(&self) -> String {
+        let mut s = String::from("teacher ");
+        s.push_str(&self.name);
+        s
+    }
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+fn main() {
+  let s1 = Student { name: String::from("Lukas") };
+  let s2 = Student { name: String::from("Anita") };
+  let t1 = Teacher { name: String::from("Sensei") };
+  println!("{}\n{}\n{}", s1.name(), s2.name(), t1.name());
+}
+  \end{minted}
+  \begin{minted}{text}
+student Lukas
+student Anita
+teacher Sensei
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}{rust}
+struct Container {
+    elements: Vec<dyn Named>,
+}
+  \end{minted}
+  \begin{minted}[fontsize=\scriptsize]{text}
+error[E0277]: the size for values of type
+  `(dyn Named + 'static)` cannot be known
+  at compilation time
+  --> src/main.rs:25:5
+   |
+25 |     elements: Vec<dyn Named>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |     doesn't have a size known at compile-time
+   |
+   = help: the trait `std::marker::Sized` is not implemented
+          for `(dyn Named + 'static)`
+   = note: required by `std::vec::Vec`
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}{rust}
+struct Container {
+  elements: Vec<Box<dyn Named>>,
+}
+
+fn main() {
+  let c = Container {
+    elements: vec![
+      Box::new(s1), Box::new(s2),
+       Box::new(t1)
+  ]};
+  
+  println!("{}", c.elements[0].name());
+  // "student Lukas"
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}{rust}
+struct Container<T: Named> {
+    elements: Vec<Box<T>>,
+}
+
+fn main() {
+  let c = Container {
+    elements: vec![
+      Box::new(s1), Box::new(s2),
+       Box::new(t1)
+  ]};
+  println!("{}", c.elements[0].name());
+}
+\end{minted}
+  What's the difference?
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}[fontsize=\scriptsize]{text}
+error[E0308]: mismatched types
+  --> src/main.rs:35:61
+   |
+35 | elements: vec![Box::new(s1), Box::new(s2), Box::new(t1)]
+   |   expected struct `Student`, found struct `Teacher` ^^
+
+error: aborting due to previous error
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object example}
+  \begin{minted}[fontsize=\scriptsize]{text}
+error[E0308]: mismatched types
+  --> src/main.rs:35:61
+   |
+35 | elements: vec![Box::new(s1), Box::new(s2), Box::new(t1)]
+   |   expected struct `Student`, found struct `Teacher` ^^
+
+error: aborting due to previous error
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Trait object coercion}
+  \begin{itemize}
+    \item Casts for trait objects are possible, but rarely necessary
+    \item Use \mintinline{rust}{as} keyword for coercion
+    \item \mintinline{rust}{&obj as &Trait}
+    \item Allows to tests for object safety
+  \end{itemize}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+let v = vec![1, 2, 3];
+let o = &v as &Clone;
+  \end{minted}
+\end{frame}
+
+\begin{frame}[standout]
+  The \emph{type keyword} or \emph{associated types}
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \begin{minted}{rust}
+trait Graph<N, E> {
+    fn has_edge(&self, &N, &N) -> bool;
+    fn edges(&self, &N) -> Vec<E>;
+    // Etc.
+}
+  \end{minted}
+  A Graph generic over any node type and edge type.
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \begin{minted}{rust}
+fn distance<N, E, G: Graph<N, E>>(
+  graph: &G, start: &N, end: &N
+) -> u32 {
+  // implementation of distance function
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \begin{minted}{rust}
+trait Graph {
+  type N;
+  type E;
+
+  fn has_edge(&self, &Self::N, &Self::N) -> bool;
+  fn edges(&self, &Self::N) -> Vec<Self::E>;
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \begin{itemize}
+    \item Associated types are declared with the \mintinline{rust}{type} keyword within a trait
+    \item Binds a type to some instance of a graph
+    \item In our example: Graph is a trait with two associated types \emph{N} and \emph{E}
+  \end{itemize}
+\end{frame}
+
+
+\begin{frame}[fragile]{Associated types}
+  \begin{itemize}
+    \item Associated types are declared with the \mintinline{rust}{type} keyword within a trait
+    \item Binds a type to some instance of a graph
+    \item In our example: Graph is a trait with two associated types \emph{N} and \emph{E}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \begin{minted}[fontsize=\scriptsize]{rust}
+struct Node;
+struct Edge;
+struct MyGraph;
+
+impl Graph for MyGraph {
+  type N = Node;
+  type E = Edge;
+
+  fn has_edge(&self, n1: &Node, n2: &Node)
+     -> bool
+  {
+    true
+  }
+
+  fn edges(&self, n: &Node)
+    -> Vec<Edge>
+  {
+    Vec::new()
+  }
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \textbf{Associated types and coercion into a trait object:}
+
+  \begin{minted}{rust}
+let graph = MyGraph;
+let obj = Box::new(graph) as Box<Graph>;
+  \end{minted}
+
+  \begin{minted}[fontsize=\scriptsize]{text}
+error: the value of the associated type `E`
+       (from the trait `main::Graph`) must
+       be specified [E0191]
+let obj = Box::new(graph) as Box<Graph>;
+          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+24:44 error: the value of the associated type `N`
+             (from the trait `main::Graph`) must
+             be specified [E0191]
+let obj = Box::new(graph) as Box<Graph>;
+          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Associated types}
+  \textbf{Solution:} explicit assignment
+  \begin{minted}{rust}
+let graph = MyGraph;
+let obj = Box::new(graph) as
+  Box<Graph<N=Node, E=Edge>>;
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{Add trait}
+  \href{https://doc.rust-lang.org/src/core/ops/arith.rs.html#66}{Add trait} via stdlib implementation
+  \begin{minted}[fontsize=\scriptsize]{rust}
+#[lang = "add"]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_on_unimplemented(
+  on(all(_Self = "{integer}", Rhs = "{float}"), message = "cannot add a float to an integer",),
+  on(all(_Self = "{float}", Rhs = "{integer}"), message = "cannot add an integer to a float",),
+  message = "cannot add `{Rhs}` to `{Self}`",
+  label = "no implementation for `{Self} + {Rhs}`"
+)]
+#[doc(alias = "+")]
+pub trait Add<Rhs = Self> {
+  /// The resulting type after applying the `+` operator.
+  #[stable(feature = "rust1", since = "1.0.0")]
+  type Output;
+
+  /// Performs the `+` operation.
+  #[must_use]
+  #[stable(feature = "rust1", since = "1.0.0")]
+  fn add(self, rhs: Rhs) -> Self::Output;
+}
+\end{minted}
+\end{frame}
+
+\begin{frame}[standout]
+  TypeId
+\end{frame}
+
+\begin{frame}[fragile]{TypeId}
+  \texttt{TypeId} is a crate in stdlib that allows you to reason about types (obviously at compile time) in a limited manner. One example:
+  \begin{minted}[fontsize=\scriptsize]{rust}
+use std::any::{Any, TypeId};
+
+fn is_string<T: ?Sized + Any>(_s: &T) -> bool {
+    TypeId::of::<String>() == TypeId::of::<T>()
+}
+
+assert_eq!(is_string(&0), false);
+assert_eq!(is_string(&"cookie monster".to_string()), true);
+\end{minted}
+\end{frame}
+
+
+
+% TODO interior mutability
+
+%\begin{frame}[standout]
+%  What are \mintinline{rust}{?Sized} traits?
+%\end{frame}
+
+%\begin{frame}[fragile]{\mintinline{rust}{?Sized}}
+%  \begin{itemize}
+%    \item TODO
+%  \end{itemize}
+%\end{frame}
+
+\section{Epilogue}
+
+\begin{frame}[fragile]{Quiz}
+  \begin{description}
+    %\item[What is interior mutability?] \hfill{} \\
+    %  ~\uncover<2->{An immutable data structure maintains mutable objects}
+    %\item[What does \mintinline{rust}{?Sized} stand for?] \hfill{} \\
+    %  ~\uncover<3->{A trait bound matching non-sized types as well (i.e. types of unknown size)}
+    \item[What is an associated type?] \hfill{} \\
+      ~\uncover<2->{A type local to a trait}
+    \item[What is dynamic dispatching?] \hfill{} \\
+      ~\uncover<3->{An object is generated containing only pointers to the trait method implementations}
+    \item[When do you use the \mintinline{rust}{dyn} keyword?] \hfill{} \\
+      ~\uncover<4->{To refer to a trait object}
+%    \item[What is referential transparency?] \hfill{} \\
+%      ~\uncover<4->{A program maintains the same semantics if some variable is replaced by its value}
+%    \item[When do you use the \mintinline{rust}{dyn} and \mintinline{rust}{ref} keywords?] \hfill{} \\
+%      ~\uncover<5->{
+%        \mintinline{rust}{dyn} adresses a reference to a trait implementation \\
+%        \mintinline{rust}{ref} matches a reference in pattern matching context
+%      }
+  \end{description}
+\end{frame}
+
+\begin{frame}[fragile]{Quiz on macros (skipped last time)}
+  \begin{description}
+    \item[How can you syntactically recognize macros?] \hfill{} \\
+      ~\uncover<2->{\mintinline{rust}{macro!()}}
+    \item[Which two kinds of macros exist?] \hfill{} \\
+      ~\uncover<3->{declarative \& procedural}
+    \item[What kind of procedural macros exist?] \hfill{} \\
+      ~\uncover<4->{derive macros, attribute-like macros, function-like macros}
+    \item[Define macro hygiene] \hfill{} \\
+      ~\uncover<5->{Local scope does not get polluted by variables introduced in macro}
+    \item[Which repetition specifiers exist in macros?] \hfill{} \\
+      \uncover<6->{0--infinity: \mintinline{rust}{*} \\ 0--1: \mintinline{rust}{?} \\ 1--infinity: \mintinline{rust}{+}}
+  \end{description}
+\end{frame}
+
+\begin{frame}[fragile]{Next time}
+  \textbf{Covid19 disclaimer:}
+    Once, more than 15 people are allowed to meet and the majority is fine with it,
+    we are going to schedule an offline meeting. In the following, we are going to
+    hold a \emph{Hacker Jeopardy} (finally).
+
+  \begin{tabular}{ll}
+    Next meetup  & Wed, 2020/06/24 \\
+    Topic        & Lifetimes, anonymous functions and modularization
+  \end{tabular}
+\end{frame}
+
+\begin{frame}[fragile]{Next time}
+  For the ambitious ones:
+  \begin{itemize}
+    \item Rust lifetimes are inspired by Cyclone's memory regions
+    \item I will talk about Cyclone next time
+    \item \href{https://www.usenix.org/legacy/event/usenix02/full_papers/jim/jim_html/}{Cyclone: A safe dialect of C} (2002)
+    \item \href{http://cyclone.thelanguage.org/}{Cyclone homepage}
+    \item Recommendation: read the Cyclone paper before next time
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[standout]
+  Thank you!
+
+  \includegraphics[width=40pt]{images/rustacean-flat-happy.png}
+\end{frame}
+
+\end{document}

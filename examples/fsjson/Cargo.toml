@@ -1,0 +1,7 @@
+[package]
+name = "fsjson"
+version = "1.0.0"
+authors = ["meisterluk <admin@lukas-prokop.at>"]
+edition = "2018"
+
+[dependencies]
